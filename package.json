@@ -1,0 +1,22 @@
+{
+  "name": "custom-spotify-mcp",
+  "version": "1.0.0",
+  "description": "Spotify MCP server for Claude Desktop",
+  "type": "module",
+  "bin": {
+    "spotify-mcp": "./build/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "open": "^10.1.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
