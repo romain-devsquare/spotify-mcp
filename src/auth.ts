@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
@@ -25,7 +25,11 @@ const SCOPES = [
 
 let cachedToken: TokenData | null = null;
 let refreshPromise: Promise<TokenData> | null = null;
-let pendingAuthFlow: Promise<TokenData> | null = null;
+
+// Singleton auth flow state
+let activeAuthServer: Server | null = null;
+let activeAuthPromise: Promise<TokenData> | null = null;
+let activeAuthUrl: string | null = null;
 
 function getClientId(): string {
   const id = process.env.SPOTIFY_CLIENT_ID;
@@ -72,7 +76,6 @@ function generateCodeChallenge(verifier: string): string {
 }
 
 function openBrowser(url: string): void {
-  // Use platform-specific commands to open browser, more reliable than 'open' package in subprocess context
   const platform = process.platform;
   let command: string;
   if (platform === "win32") {
@@ -89,22 +92,28 @@ function openBrowser(url: string): void {
   });
 }
 
-export class AuthError extends Error {
-  public authUrl: string;
-  constructor(authUrl: string) {
-    super(
-      `Spotify authentication required. Please open this URL in your browser to connect:\n\n${authUrl}\n\nAfter authorizing, try your request again.`
-    );
-    this.name = "AuthError";
-    this.authUrl = authUrl;
+function cleanupAuthFlow(): void {
+  if (activeAuthServer) {
+    try { activeAuthServer.close(); } catch {}
+    activeAuthServer = null;
   }
+  activeAuthPromise = null;
+  activeAuthUrl = null;
 }
 
 /**
- * Start the PKCE auth flow: spins up a local server, opens the browser, and waits for callback.
- * Returns the auth URL so it can be shown to the user.
+ * Start the PKCE auth flow. Returns the auth URL.
+ * Only one flow can be active at a time — calling again reuses the existing one.
  */
-export function startAuthFlow(): { authUrl: string; waitForToken: Promise<TokenData> } {
+export function startAuthFlow(): string {
+  // If there's already an active flow, return its URL
+  if (activeAuthUrl && activeAuthPromise) {
+    return activeAuthUrl;
+  }
+
+  // Clean up any stale state
+  cleanupAuthFlow();
+
   const clientId = getClientId();
   const port = getRedirectPort();
   const redirectUri = getRedirectUri();
@@ -121,10 +130,12 @@ export function startAuthFlow(): { authUrl: string; waitForToken: Promise<TokenD
   authUrl.searchParams.set("scope", SCOPES);
   authUrl.searchParams.set("state", state);
 
-  const waitForToken = new Promise<TokenData>((resolve, reject) => {
-    const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  activeAuthUrl = authUrl.toString();
+
+  activeAuthPromise = new Promise<TokenData>((resolve, reject) => {
+    const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
       try {
-        const url = new URL(req.url || "/", `http://localhost:${port}`);
+        const url = new URL(req.url || "/", `http://127.0.0.1:${port}`);
         if (url.pathname !== "/callback") {
           res.writeHead(404);
           res.end("Not found");
@@ -138,8 +149,7 @@ export function startAuthFlow(): { authUrl: string; waitForToken: Promise<TokenD
         if (error) {
           res.writeHead(400);
           res.end(`Authorization error: ${error}`);
-          server.close();
-          pendingAuthFlow = null;
+          cleanupAuthFlow();
           reject(new Error(`Spotify authorization error: ${error}`));
           return;
         }
@@ -147,8 +157,7 @@ export function startAuthFlow(): { authUrl: string; waitForToken: Promise<TokenD
         if (returnedState !== state) {
           res.writeHead(400);
           res.end("State mismatch");
-          server.close();
-          pendingAuthFlow = null;
+          cleanupAuthFlow();
           reject(new Error("OAuth state mismatch"));
           return;
         }
@@ -156,8 +165,7 @@ export function startAuthFlow(): { authUrl: string; waitForToken: Promise<TokenD
         if (!code) {
           res.writeHead(400);
           res.end("Missing authorization code");
-          server.close();
-          pendingAuthFlow = null;
+          cleanupAuthFlow();
           reject(new Error("Missing authorization code"));
           return;
         }
@@ -178,8 +186,7 @@ export function startAuthFlow(): { authUrl: string; waitForToken: Promise<TokenD
           const errorBody = await tokenResponse.text();
           res.writeHead(500);
           res.end("Token exchange failed");
-          server.close();
-          pendingAuthFlow = null;
+          cleanupAuthFlow();
           reject(new Error(`Token exchange failed: ${errorBody}`));
           return;
         }
@@ -210,45 +217,61 @@ export function startAuthFlow(): { authUrl: string; waitForToken: Promise<TokenD
             </body>
           </html>
         `);
-        server.close();
-        pendingAuthFlow = null;
+        cleanupAuthFlow();
         resolve(token);
       } catch (err) {
-        server.close();
-        pendingAuthFlow = null;
+        cleanupAuthFlow();
         reject(err);
       }
     });
 
-    server.listen(port, () => {
-      console.error(`Auth server listening on port ${port}`);
-      console.error(`Auth URL: ${authUrl.toString()}`);
-      openBrowser(authUrl.toString());
+    // Prevent the HTTP server from keeping the process alive on its own
+    httpServer.unref();
+
+    httpServer.listen(port, "127.0.0.1", () => {
+      console.error(`Auth server listening on 127.0.0.1:${port}`);
+      openBrowser(activeAuthUrl!);
     });
+
+    httpServer.on("error", (err) => {
+      console.error("Auth server error:", err);
+      cleanupAuthFlow();
+      reject(new Error(`Could not start auth server on port ${port}: ${err.message}`));
+    });
+
+    activeAuthServer = httpServer;
 
     // Timeout after 5 minutes
     setTimeout(() => {
-      server.close();
-      pendingAuthFlow = null;
-      reject(new Error("OAuth flow timed out after 5 minutes. Please try again."));
+      if (activeAuthPromise === activeAuthPromise) {
+        cleanupAuthFlow();
+        reject(new Error("OAuth flow timed out after 5 minutes. Call spotify_auth to try again."));
+      }
     }, 300_000);
   });
 
   // Prevent unhandled rejection from crashing the process
-  waitForToken.catch(() => {});
-  pendingAuthFlow = waitForToken;
-  return { authUrl: authUrl.toString(), waitForToken };
+  activeAuthPromise.catch(() => {});
+
+  return activeAuthUrl;
 }
 
 /**
- * Wait for a pending auth flow to complete (called after user has been shown the URL).
+ * Wait for the active auth flow to complete.
  */
 export async function waitForPendingAuth(): Promise<string> {
-  if (pendingAuthFlow) {
-    const token = await pendingAuthFlow;
+  if (activeAuthPromise) {
+    const token = await activeAuthPromise;
     return token.access_token;
   }
   throw new Error("No pending auth flow. Please call spotify_auth first.");
+}
+
+/**
+ * Check if auth is needed (no valid token available).
+ */
+export function isAuthNeeded(): boolean {
+  return !cachedToken || cachedToken.expires_at <= Date.now() + 60_000;
 }
 
 async function refreshAccessToken(refreshToken: string): Promise<TokenData> {
@@ -286,6 +309,10 @@ async function refreshAccessToken(refreshToken: string): Promise<TokenData> {
   return token;
 }
 
+/**
+ * Get a valid access token. Loads from disk, refreshes if needed.
+ * Throws a descriptive error if no token exists (user must call spotify_auth).
+ */
 export async function getValidToken(): Promise<string> {
   // Use cached token if still valid (with 60s buffer)
   if (cachedToken && cachedToken.expires_at > Date.now() + 60_000) {
@@ -313,12 +340,13 @@ export async function getValidToken(): Promise<string> {
       const token = await refreshPromise;
       return token.access_token;
     } catch (err) {
-      console.error("Token refresh failed, starting new auth flow:", err);
+      console.error("Token refresh failed:", err);
       cachedToken = null;
     }
   }
 
-  // No valid token — throw AuthError so the tool can return the URL to the user
-  const { authUrl } = startAuthFlow();
-  throw new AuthError(authUrl);
+  // No valid token — tell the user to authenticate via the auth tool
+  throw new Error(
+    "Not connected to Spotify. Please ask Claude to use the `spotify_auth` tool first to connect your account."
+  );
 }

@@ -2,9 +2,8 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
 import { SpotifyClient } from "./spotify-client.js";
-import { startAuthFlow, waitForPendingAuth, AuthError } from "./auth.js";
+import { startAuthFlow, waitForPendingAuth } from "./auth.js";
 import { registerPlaylistTools } from "./tools/playlists.js";
 import { registerTrackTools } from "./tools/tracks.js";
 
@@ -23,11 +22,11 @@ const spotify = new SpotifyClient();
 // Auth tool — starts the OAuth flow and returns the URL for the user to open
 server.tool(
   "spotify_auth",
-  "Connect to Spotify. Opens a browser for authorization. Call this first if other tools return auth errors.",
+  "Connect to Spotify. Returns an authorization URL to open in the browser. Call this first before using other Spotify tools.",
   {},
   async () => {
     try {
-      const { authUrl } = startAuthFlow();
+      const authUrl = startAuthFlow();
       return {
         content: [
           {
@@ -37,7 +36,7 @@ server.tool(
               "",
               authUrl,
               "",
-              "After you authorize in the browser, call the `spotify_auth_complete` tool to finish connecting.",
+              "After you authorize in the browser and see 'Connected to Spotify!', call the `spotify_auth_complete` tool.",
             ].join("\n"),
           },
         ],
@@ -51,7 +50,7 @@ server.tool(
   }
 );
 
-// Auth complete tool — waits for the OAuth callback after user authorized in browser
+// Auth complete tool — waits for the OAuth callback
 server.tool(
   "spotify_auth_complete",
   "Complete Spotify authorization after the user has approved access in the browser. Call this after spotify_auth.",
@@ -63,7 +62,7 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `Successfully connected to Spotify! You can now use all Spotify tools. (Token starts with ${token.substring(0, 8)}...)`,
+            text: "Successfully connected to Spotify! You can now use all Spotify tools.",
           },
         ],
       };
