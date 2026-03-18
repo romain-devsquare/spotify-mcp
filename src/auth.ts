@@ -43,7 +43,7 @@ function getRedirectPort(): number {
 }
 
 function getRedirectUri(): string {
-  return `http://localhost:${getRedirectPort()}/callback`;
+  return `http://127.0.0.1:${getRedirectPort()}/callback`;
 }
 
 async function loadTokenFromDisk(): Promise<TokenData | null> {

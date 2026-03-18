@@ -22,10 +22,12 @@ A Model Context Protocol (MCP) server for Spotify, built in TypeScript. Use it w
 4. Fill in the form:
    - **App name**: anything you like (e.g. `Claude MCP`)
    - **App description**: anything
-   - **Redirect URI**: `http://localhost:8888/callback` (click **Add**)
+   - **Redirect URI**: `http://127.0.0.1:8888/callback` (click **Add**)
    - Under **"Which API/SDKs are you planning to use?"**, check **Web API**
 5. Click **"Save"**
 6. On your app page, click **"Settings"** and copy the **Client ID**
+
+> **Important**: Use `127.0.0.1` (not `localhost`) — Spotify rejects `http://localhost` as insecure but allows `http://127.0.0.1`.
 
 > You do NOT need a Client Secret — this server uses the PKCE OAuth flow which only requires the Client ID.
 
@@ -70,13 +72,24 @@ Close and reopen Claude Desktop so it picks up the new MCP server. You should se
 
 ### Step 5 — Authorize Spotify (first time only)
 
-The first time you use any Spotify tool in Claude, your browser will open and ask you to log in to Spotify and approve permissions. After approval you'll see a "Connected to Spotify!" page — you can close it and go back to Claude.
+1. In Claude Desktop, ask Claude to use the **`spotify_auth`** tool (e.g. "Connect to Spotify")
+2. Claude will return an authorization URL — **click it** to open in your browser
+3. Log in to Spotify and approve the permissions
+4. You'll see a "Connected to Spotify!" page — you can close it
+5. Ask Claude to call **`spotify_auth_complete`** to finish the connection
 
 Tokens are saved to `~/.spotify-mcp-tokens.json` and refresh automatically. You won't need to log in again unless you revoke access.
 
 ---
 
 ## Available Tools
+
+### Authentication Tools
+
+| Tool                    | Description                                               |
+|-------------------------|-----------------------------------------------------------|
+| `spotify_auth`          | Start Spotify authorization — returns a URL to open       |
+| `spotify_auth_complete` | Complete authorization after approving in the browser      |
 
 ### Playlist Tools
 
@@ -117,6 +130,9 @@ Tokens are saved to `~/.spotify-mcp-tokens.json` and refresh automatically. You 
 
 ## Example Prompts for Claude
 
+### First time — connect
+> "Connect to Spotify" (triggers `spotify_auth`, then `spotify_auth_complete`)
+
 ### Browse playlists
 > "Show me all my playlists"
 
@@ -145,8 +161,14 @@ Tokens are saved to `~/.spotify-mcp-tokens.json` and refresh automatically. You 
 ### "SPOTIFY_CLIENT_ID environment variable is required"
 You forgot to set the `SPOTIFY_CLIENT_ID` in the Claude Desktop config. See Step 3.
 
-### Browser doesn't open for auth
-The auth URL is printed in the server logs. You can find it in Claude Desktop's MCP server logs and open it manually.
+### "redirect_uri: Insecure" error
+Make sure your Spotify app redirect URI uses `http://127.0.0.1:8888/callback` (not `http://localhost:8888/callback`). Spotify rejects `localhost` over HTTP but allows `127.0.0.1`.
+
+### "redirect_uri: Not matching configuration" error
+The redirect URI in your Spotify app settings must exactly match `http://127.0.0.1:8888/callback`. Go to your app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard), click Settings, and add/fix the redirect URI.
+
+### Auth URL doesn't work / browser doesn't open
+Use the `spotify_auth` tool in Claude — it returns the URL directly in the chat. Click it to open in your browser. After authorizing, call `spotify_auth_complete`.
 
 ### 403 error on audio features
 Spotify restricted the audio features endpoint for apps created after November 2024. Go to your [Spotify Developer Dashboard](https://developer.spotify.com/dashboard), select your app, and request **"Extended Quota Mode"**.
@@ -154,10 +176,10 @@ Spotify restricted the audio features endpoint for apps created after November 2
 ### Token expired / auth issues
 Delete the token file and restart Claude Desktop to re-authenticate:
 ```bash
-# Windows
+# Windows (PowerShell or cmd)
 del %USERPROFILE%\.spotify-mcp-tokens.json
 
-# macOS/Linux
+# macOS/Linux or Git Bash
 rm ~/.spotify-mcp-tokens.json
 ```
 
@@ -169,7 +191,7 @@ Set a different port in the Claude Desktop config env:
   "SPOTIFY_REDIRECT_PORT": "9999"
 }
 ```
-Then also update the redirect URI in your Spotify app settings to `http://localhost:9999/callback`.
+Then also update the redirect URI in your Spotify app settings to `http://127.0.0.1:9999/callback`.
 
 ---
 
@@ -177,7 +199,7 @@ Then also update the redirect URI in your Spotify app settings to `http://localh
 
 ```
 src/
-  index.ts              Entry point — wires up MCP server
+  index.ts              Entry point — MCP server + auth tools
   auth.ts               Spotify OAuth PKCE flow + token persistence
   spotify-client.ts     Spotify Web API client
   tools/
