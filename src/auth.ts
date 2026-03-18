@@ -92,13 +92,17 @@ function openBrowser(url: string): void {
   });
 }
 
-function cleanupAuthFlow(): void {
+function cleanupAuthServer(): void {
   if (activeAuthServer) {
     try { activeAuthServer.close(); } catch {}
     activeAuthServer = null;
   }
-  activeAuthPromise = null;
   activeAuthUrl = null;
+}
+
+function cleanupAuthFlow(): void {
+  cleanupAuthServer();
+  activeAuthPromise = null;
 }
 
 /**
@@ -217,7 +221,7 @@ export function startAuthFlow(): string {
             </body>
           </html>
         `);
-        cleanupAuthFlow();
+        cleanupAuthServer();
         resolve(token);
       } catch (err) {
         cleanupAuthFlow();
@@ -260,10 +264,20 @@ export function startAuthFlow(): string {
  * Wait for the active auth flow to complete.
  */
 export async function waitForPendingAuth(): Promise<string> {
+  // If there's an active auth flow, wait for it
   if (activeAuthPromise) {
     const token = await activeAuthPromise;
+    activeAuthPromise = null;
     return token.access_token;
   }
+
+  // Maybe the auth already completed and token is on disk
+  const diskToken = await loadTokenFromDisk();
+  if (diskToken && diskToken.expires_at > Date.now() + 60_000) {
+    cachedToken = diskToken;
+    return diskToken.access_token;
+  }
+
   throw new Error("No pending auth flow. Please call spotify_auth first.");
 }
 

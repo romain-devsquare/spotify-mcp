@@ -133,14 +133,18 @@ export class SpotifyClient {
     }
 
     if (!response.ok) {
-      throw new Error(`Spotify API error ${response.status}: ${await response.text()}`);
+      const errorText = await response.text();
+      console.error(`Spotify API error: ${method} ${path} → ${response.status}: ${errorText}`);
+      throw new Error(`Spotify API error ${response.status}: ${errorText}`);
     }
 
     if (response.status === 204) {
       return {} as T;
     }
 
-    return (await response.json()) as T;
+    const json = await response.json();
+    console.error(`Spotify API success: ${method} ${path} → ${response.status}, keys: ${Object.keys(json as object).join(",")}`);
+    return json as T;
   }
 
   async getCurrentUser(): Promise<SpotifyUser> {
