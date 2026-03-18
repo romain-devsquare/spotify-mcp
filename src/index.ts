@@ -8,6 +8,11 @@ import { startAuthFlow, waitForPendingAuth, AuthError } from "./auth.js";
 import { registerPlaylistTools } from "./tools/playlists.js";
 import { registerTrackTools } from "./tools/tracks.js";
 
+// Prevent unhandled rejections from crashing the server
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled rejection (server stays running):", err);
+});
+
 const server = new McpServer({
   name: "spotify",
   version: "1.0.0",

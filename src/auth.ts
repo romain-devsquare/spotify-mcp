@@ -234,6 +234,8 @@ export function startAuthFlow(): { authUrl: string; waitForToken: Promise<TokenD
     }, 300_000);
   });
 
+  // Prevent unhandled rejection from crashing the process
+  waitForToken.catch(() => {});
   pendingAuthFlow = waitForToken;
   return { authUrl: authUrl.toString(), waitForToken };
 }
