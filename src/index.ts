@@ -7,9 +7,41 @@ import { startAuthFlow, waitForPendingAuth } from "./auth.js";
 import { registerPlaylistTools } from "./tools/playlists.js";
 import { registerTrackTools } from "./tools/tracks.js";
 
-// Prevent unhandled rejections from crashing the server
+// Prevent ANY crash from killing the server
 process.on("unhandledRejection", (err) => {
   console.error("Unhandled rejection (server stays running):", err);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception (server stays running):", err);
+});
+
+// Keep process alive — prevent exit when event loop is empty
+const keepAlive = setInterval(() => {}, 60_000 * 30);
+keepAlive.unref(); // don't prevent clean exit when stdio closes
+
+// Log when process is about to exit (for debugging)
+process.on("exit", (code) => {
+  console.error(`Process exiting with code ${code}`);
+});
+
+process.on("SIGTERM", () => {
+  console.error("Received SIGTERM");
+});
+
+process.on("SIGINT", () => {
+  console.error("Received SIGINT");
+});
+
+// Prevent broken pipe from crashing the server
+process.stdout.on("error", (err) => {
+  if ((err as NodeJS.ErrnoException).code === "EPIPE") {
+    console.error("stdout EPIPE — client disconnected");
+  }
+});
+
+process.stdin.on("error", (err) => {
+  console.error("stdin error:", err);
 });
 
 const server = new McpServer({

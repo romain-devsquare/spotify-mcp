@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { SpotifyClient } from "../spotify-client.js";
+import { SpotifyClient, type SpotifyPlaylistItem } from "../spotify-client.js";
 
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
@@ -11,6 +11,11 @@ function formatDuration(ms: number): string {
 function errorResponse(err: unknown) {
   const msg = err instanceof Error ? err.message : String(err);
   return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true as const };
+}
+
+// Feb 2026 API: 'track' field renamed to 'item' in playlist items
+function getTrackFromItem(item: SpotifyPlaylistItem) {
+  return item.item ?? item.track ?? null;
 }
 
 export function registerPlaylistTools(server: McpServer, spotify: SpotifyClient): void {
@@ -25,20 +30,20 @@ export function registerPlaylistTools(server: McpServer, spotify: SpotifyClient)
       try {
         const result = await spotify.getUserPlaylists(limit ?? 50, offset ?? 0);
 
-        // Debug: log raw response shape
-        console.error(`Playlists response: total=${result?.total}, items=${result?.items?.length}, keys=${Object.keys(result || {}).join(",")}`);
-        if (result?.items?.[0]) {
-          console.error(`First item keys: ${Object.keys(result.items[0]).join(",")}`);
-        }
-
         if (!result?.items) {
-          return { content: [{ type: "text", text: `Unexpected API response. Raw keys: ${Object.keys(result || {}).join(", ")}` }], isError: true };
+          return { content: [{ type: "text", text: "Unexpected API response — no items returned." }], isError: true };
         }
 
-        const lines = result.items.map(
-          (p) =>
-            `- **${p.name}** (${p.tracks?.total ?? "?"} tracks) — ID: \`${p.id}\` | Owner: ${p.owner?.display_name ?? "Unknown"} | ${p.public ? "Public" : "Private"}`
-        );
+        const lines = result.items.map((p) => {
+          let trackCount = "?";
+          if (p.tracks && typeof p.tracks === "object" && "total" in p.tracks) {
+            trackCount = String(p.tracks.total);
+          } else if (Array.isArray(p.items)) {
+            trackCount = String(p.items.length);
+          }
+          return `- **${p.name}** (${trackCount} tracks) — ID: \`${p.id}\` | Owner: ${p.owner?.display_name ?? "Unknown"} | ${p.public ? "Public" : "Private"}`;
+        });
+
         const text = [
           `Found ${result.total} playlists (showing ${result.offset + 1}-${result.offset + result.items.length}):`,
           "",
@@ -56,7 +61,7 @@ export function registerPlaylistTools(server: McpServer, spotify: SpotifyClient)
 
   server.tool(
     "get_playlist_tracks",
-    "Get tracks from a Spotify playlist with full details",
+    "Get tracks from a Spotify playlist with full details. Only works for playlists you own or collaborate on.",
     {
       playlist_id: z.string().describe("The Spotify playlist ID"),
       limit: z.number().min(1).max(100).optional().describe("Max tracks to return (default 100)"),
@@ -64,14 +69,15 @@ export function registerPlaylistTools(server: McpServer, spotify: SpotifyClient)
     },
     async ({ playlist_id, limit, offset }) => {
       try {
-        const result = await spotify.getPlaylistTracks(playlist_id, limit ?? 100, offset ?? 0);
+        const result = await spotify.getPlaylistItems(playlist_id, limit ?? 100, offset ?? 0);
         const lines = result.items
-          .filter((item) => item.track)
           .map((item, i) => {
-            const t = item.track!;
+            const t = getTrackFromItem(item);
+            if (!t) return null;
             const artists = t.artists.map((a) => a.name).join(", ");
-            return `${result.offset + i + 1}. **${t.name}** — ${artists} | Album: ${t.album.name} | ${formatDuration(t.duration_ms)} | Popularity: ${t.popularity} | URI: \`${t.uri}\` | ID: \`${t.id}\``;
-          });
+            return `${result.offset + i + 1}. **${t.name}** — ${artists} | Album: ${t.album.name} | ${formatDuration(t.duration_ms)} | URI: \`${t.uri}\` | ID: \`${t.id}\``;
+          })
+          .filter(Boolean);
 
         const text = [
           `Playlist tracks (${result.total} total, showing ${result.offset + 1}-${result.offset + result.items.length}):`,
@@ -90,26 +96,28 @@ export function registerPlaylistTools(server: McpServer, spotify: SpotifyClient)
 
   server.tool(
     "get_all_playlist_tracks",
-    "Get ALL tracks from a playlist (handles pagination automatically). Best for full playlist analysis.",
+    "Get ALL tracks from a playlist (handles pagination automatically). Best for full playlist analysis. Only works for playlists you own or collaborate on.",
     {
       playlist_id: z.string().describe("The Spotify playlist ID"),
     },
     async ({ playlist_id }) => {
       try {
-        const allTracks: Array<{ track: NonNullable<(typeof firstPage.items)[0]["track"]>; added_at: string }> = [];
+        const allTracks: Array<{ track: NonNullable<ReturnType<typeof getTrackFromItem>>; added_at: string }> = [];
         let offset = 0;
         const limit = 100;
 
-        const firstPage = await spotify.getPlaylistTracks(playlist_id, limit, offset);
+        const firstPage = await spotify.getPlaylistItems(playlist_id, limit, offset);
         for (const item of firstPage.items) {
-          if (item.track) allTracks.push({ track: item.track, added_at: item.added_at });
+          const t = getTrackFromItem(item);
+          if (t) allTracks.push({ track: t, added_at: item.added_at });
         }
         offset += limit;
 
         while (offset < firstPage.total) {
-          const page = await spotify.getPlaylistTracks(playlist_id, limit, offset);
+          const page = await spotify.getPlaylistItems(playlist_id, limit, offset);
           for (const item of page.items) {
-            if (item.track) allTracks.push({ track: item.track, added_at: item.added_at });
+            const t = getTrackFromItem(item);
+            if (t) allTracks.push({ track: t, added_at: item.added_at });
           }
           offset += limit;
         }
@@ -117,7 +125,7 @@ export function registerPlaylistTools(server: McpServer, spotify: SpotifyClient)
         const lines = allTracks.map((item, i) => {
           const t = item.track;
           const artists = t.artists.map((a) => a.name).join(", ");
-          return `${i + 1}. **${t.name}** — ${artists} | Album: ${t.album.name} (${t.album.release_date}) | ${formatDuration(t.duration_ms)} | Popularity: ${t.popularity} | Explicit: ${t.explicit} | URI: \`${t.uri}\` | ID: \`${t.id}\``;
+          return `${i + 1}. **${t.name}** — ${artists} | Album: ${t.album.name} (${t.album.release_date}) | ${formatDuration(t.duration_ms)} | Explicit: ${t.explicit} | URI: \`${t.uri}\` | ID: \`${t.id}\``;
         });
 
         const text = [
@@ -171,7 +179,7 @@ export function registerPlaylistTools(server: McpServer, spotify: SpotifyClient)
     },
     async ({ playlist_id, track_uris }) => {
       try {
-        await spotify.addTracksToPlaylist(playlist_id, track_uris);
+        await spotify.addItemsToPlaylist(playlist_id, track_uris);
         return {
           content: [
             {

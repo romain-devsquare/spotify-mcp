@@ -36,17 +36,17 @@ function errorResponse(err: unknown) {
 export function registerTrackTools(server: McpServer, spotify: SpotifyClient): void {
   server.tool(
     "search_tracks",
-    "Search for tracks on Spotify",
+    "Search for tracks on Spotify. Max 10 results per request (API limit).",
     {
       query: z.string().describe("Search query (track name, artist, etc.)"),
-      limit: z.number().min(1).max(50).optional().describe("Max results to return (default 20)"),
+      limit: z.number().min(1).max(10).optional().describe("Max results to return (default 10, max 10)"),
     },
     async ({ query, limit }) => {
       try {
-        const result = await spotify.searchTracks(query, limit ?? 20);
+        const result = await spotify.searchTracks(query, limit ?? 10);
         const lines = result.tracks.items.map((t, i) => {
           const artists = t.artists.map((a) => a.name).join(", ");
-          return `${i + 1}. **${t.name}** — ${artists} | Album: ${t.album.name} | ${formatDuration(t.duration_ms)} | Popularity: ${t.popularity} | URI: \`${t.uri}\` | ID: \`${t.id}\``;
+          return `${i + 1}. **${t.name}** — ${artists} | Album: ${t.album.name} | ${formatDuration(t.duration_ms)} | URI: \`${t.uri}\` | ID: \`${t.id}\``;
         });
 
         const text = [
@@ -78,7 +78,6 @@ export function registerTrackTools(server: McpServer, spotify: SpotifyClient): v
           `Album: ${t.album.name} (${t.album.release_date})`,
           `Track: ${t.track_number}/${t.album.total_tracks} (Disc ${t.disc_number})`,
           `Duration: ${formatDuration(t.duration_ms)}`,
-          `Popularity: ${t.popularity}/100`,
           `Explicit: ${t.explicit}`,
           `URI: \`${t.uri}\``,
           `URL: ${t.external_urls.spotify}`,
@@ -110,12 +109,12 @@ export function registerTrackTools(server: McpServer, spotify: SpotifyClient): v
 
   server.tool(
     "get_tracks_audio_features",
-    "Get audio features (BPM, energy, danceability, key, etc.) for multiple tracks at once. Essential for playlist analysis.",
+    "Get audio features (BPM, energy, danceability, key, etc.) for multiple tracks. Fetches individually (batch endpoint removed Feb 2026).",
     {
       track_ids: z
         .array(z.string())
-        .max(100)
-        .describe("Array of Spotify track IDs (max 100)"),
+        .max(50)
+        .describe("Array of Spotify track IDs (max 50 — fetched individually)"),
     },
     async ({ track_ids }) => {
       try {
@@ -142,7 +141,7 @@ export function registerTrackTools(server: McpServer, spotify: SpotifyClient): v
 
   server.tool(
     "get_recommendations",
-    "Get track recommendations based on seed tracks, artists, or genres with optional audio feature targets. Useful for finding similar tracks for playlists.",
+    "Get track recommendations based on seed tracks, artists, or genres with optional audio feature targets.",
     {
       seed_track_ids: z
         .array(z.string())
@@ -163,7 +162,7 @@ export function registerTrackTools(server: McpServer, spotify: SpotifyClient): v
       target_energy: z.number().min(0).max(1).optional().describe("Target energy (0.0-1.0)"),
       target_danceability: z.number().min(0).max(1).optional().describe("Target danceability (0.0-1.0)"),
       target_valence: z.number().min(0).max(1).optional().describe("Target valence/happiness (0.0-1.0)"),
-      limit: z.number().min(1).max(100).optional().describe("Number of recommendations (default 20)"),
+      limit: z.number().min(1).max(100).optional().describe("Number of recommendations (default 10)"),
     },
     async ({ seed_track_ids, seed_artist_ids, seed_genres, target_tempo, target_energy, target_danceability, target_valence, limit }) => {
       try {
@@ -187,12 +186,12 @@ export function registerTrackTools(server: McpServer, spotify: SpotifyClient): v
           target_energy,
           target_danceability,
           target_valence,
-          limit: limit ?? 20,
+          limit: limit ?? 10,
         });
 
         const lines = result.tracks.map((t, i) => {
           const artists = t.artists.map((a) => a.name).join(", ");
-          return `${i + 1}. **${t.name}** — ${artists} | Album: ${t.album.name} | ${formatDuration(t.duration_ms)} | Popularity: ${t.popularity} | URI: \`${t.uri}\` | ID: \`${t.id}\``;
+          return `${i + 1}. **${t.name}** — ${artists} | Album: ${t.album.name} | ${formatDuration(t.duration_ms)} | URI: \`${t.uri}\` | ID: \`${t.id}\``;
         });
 
         const text = [

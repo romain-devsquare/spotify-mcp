@@ -5,7 +5,6 @@ const BASE_URL = "https://api.spotify.com/v1";
 export interface SpotifyUser {
   id: string;
   display_name: string;
-  email?: string;
   uri: string;
 }
 
@@ -37,7 +36,6 @@ export interface SpotifyTrack {
   artists: SpotifyArtist[];
   album: SpotifyAlbum;
   duration_ms: number;
-  popularity: number;
   explicit: boolean;
   uri: string;
   external_urls: { spotify: string };
@@ -67,16 +65,20 @@ export interface SpotifyPlaylist {
   name: string;
   description: string | null;
   public: boolean | null;
-  tracks: { total: number; href: string };
+  // Feb 2026 API: 'tracks' renamed to 'items'
+  tracks?: { total: number; href: string };
+  items?: unknown[] | { total: number };
   owner: { id: string; display_name: string };
   images: SpotifyImage[];
   uri: string;
   external_urls: { spotify: string };
 }
 
-export interface SpotifyPlaylistTrackItem {
+// Feb 2026 API: 'track' renamed to 'item'
+export interface SpotifyPlaylistItem {
   added_at: string;
-  track: SpotifyTrack | null;
+  item?: SpotifyTrack | null;
+  track?: SpotifyTrack | null; // backwards compat
 }
 
 export interface SpotifyPage<T> {
@@ -118,7 +120,6 @@ export class SpotifyClient {
     });
 
     if (response.status === 401) {
-      // Token expired mid-request, get a fresh one and retry once
       const freshToken = await getValidToken();
       headers.Authorization = `Bearer ${freshToken}`;
       const retry = await fetch(url, {
@@ -143,7 +144,7 @@ export class SpotifyClient {
     }
 
     const json = await response.json();
-    console.error(`Spotify API success: ${method} ${path} → ${response.status}, keys: ${Object.keys(json as object).join(",")}`);
+    console.error(`Spotify API success: ${method} ${path} → ${response.status}`);
     return json as T;
   }
 
@@ -161,20 +162,19 @@ export class SpotifyClient {
     });
   }
 
-  async getPlaylistTracks(
+  // Feb 2026 API: endpoint renamed from /tracks to /items
+  async getPlaylistItems(
     playlistId: string,
     limit: number = 100,
     offset: number = 0
-  ): Promise<SpotifyPage<SpotifyPlaylistTrackItem>> {
-    return this.request<SpotifyPage<SpotifyPlaylistTrackItem>>(
+  ): Promise<SpotifyPage<SpotifyPlaylistItem>> {
+    return this.request<SpotifyPage<SpotifyPlaylistItem>>(
       "GET",
-      `/playlists/${playlistId}/tracks`,
+      `/playlists/${playlistId}/items`,
       undefined,
       {
         limit: limit.toString(),
         offset: offset.toString(),
-        fields:
-          "items(added_at,track(id,name,artists(id,name,uri),album(id,name,release_date,total_tracks,artists,images,uri),duration_ms,popularity,explicit,uri,external_urls,track_number,disc_number)),total,limit,offset,next",
       }
     );
   }
@@ -196,24 +196,25 @@ export class SpotifyClient {
     });
   }
 
-  async addTracksToPlaylist(playlistId: string, trackUris: string[]): Promise<void> {
-    // Spotify API allows max 100 tracks per request
-    for (let i = 0; i < trackUris.length; i += 100) {
-      const batch = trackUris.slice(i, i + 100);
-      await this.request<{ snapshot_id: string }>("POST", `/playlists/${playlistId}/tracks`, {
+  // Feb 2026 API: endpoint renamed from /tracks to /items
+  async addItemsToPlaylist(playlistId: string, uris: string[]): Promise<void> {
+    for (let i = 0; i < uris.length; i += 100) {
+      const batch = uris.slice(i, i + 100);
+      await this.request<{ snapshot_id: string }>("POST", `/playlists/${playlistId}/items`, {
         uris: batch,
       });
     }
   }
 
+  // Feb 2026 API: search limit max is now 10
   async searchTracks(
     query: string,
-    limit: number = 20
+    limit: number = 10
   ): Promise<SpotifySearchResult> {
     return this.request<SpotifySearchResult>("GET", "/search", undefined, {
       q: query,
       type: "track",
-      limit: limit.toString(),
+      limit: Math.min(limit, 10).toString(),
     });
   }
 
@@ -225,20 +226,18 @@ export class SpotifyClient {
     return this.request<SpotifyAudioFeatures>("GET", `/audio-features/${trackId}`);
   }
 
+  // Feb 2026 API: batch /tracks?ids= removed, fetch individually
   async getAudioFeaturesMultiple(
     trackIds: string[]
   ): Promise<(SpotifyAudioFeatures | null)[]> {
     const results: (SpotifyAudioFeatures | null)[] = [];
-    // Spotify API allows max 100 IDs per request
-    for (let i = 0; i < trackIds.length; i += 100) {
-      const batch = trackIds.slice(i, i + 100);
-      const response = await this.request<{ audio_features: (SpotifyAudioFeatures | null)[] }>(
-        "GET",
-        "/audio-features",
-        undefined,
-        { ids: batch.join(",") }
-      );
-      results.push(...response.audio_features);
+    for (const id of trackIds) {
+      try {
+        const features = await this.request<SpotifyAudioFeatures>("GET", `/audio-features/${id}`);
+        results.push(features);
+      } catch {
+        results.push(null);
+      }
     }
     return results;
   }
@@ -261,7 +260,7 @@ export class SpotifyClient {
     if (params.target_energy !== undefined) query.target_energy = params.target_energy.toString();
     if (params.target_danceability !== undefined) query.target_danceability = params.target_danceability.toString();
     if (params.target_valence !== undefined) query.target_valence = params.target_valence.toString();
-    query.limit = (params.limit || 20).toString();
+    query.limit = (params.limit || 10).toString();
     return this.request<{ tracks: SpotifyTrack[] }>("GET", "/recommendations", undefined, query);
   }
 }
